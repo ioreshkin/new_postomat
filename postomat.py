@@ -1,4 +1,5 @@
 import tkinter as tk
+from time import sleep
 from tkinter import messagebox
 import requests
 import threading
@@ -31,7 +32,7 @@ class VKPostManager:
         self.post_text_entry.grid(row=2, column=1, padx=5, pady=5)
         self.add_context_menu(self.post_text_entry)
 
-        tk.Label(root, text="Интервал обновления (минуты):").grid(row=3, column=0, padx=5, pady=5)
+        tk.Label(root, text="Интервал обновления (секунды):").grid(row=3, column=0, padx=5, pady=5)
         self.interval_entry = tk.Entry(root, width=40)
         self.interval_entry.grid(row=3, column=1, padx=5, pady=5)
 
@@ -64,24 +65,42 @@ class VKPostManager:
 
     def remove_existing_posts(self, token, group_id):
         try:
+            # Получаем ID пользователя, связанный с токеном
+            user_info_url = "https://api.vk.com/method/users.get"
+            user_info_params = {
+                "access_token": token,
+                "v": "5.131",
+            }
+            user_response = requests.get(user_info_url, params=user_info_params).json()
+
+            if "error" in user_response:
+                print(f"Ошибка получения ID пользователя: {user_response['error']['error_msg']}")
+                return
+
+            user_id = user_response["response"][0]["id"]
+            print(f"ID пользователя: {user_id}")
+
             # Получаем все посты на стене группы
             get_url = "https://api.vk.com/method/wall.get"
             get_params = {
                 "access_token": token,
                 "owner_id": f"-{group_id}",
-                "count": 50,  # Получаем до 100 постов
+                "count": 50,
                 "v": "5.131",
             }
             response = requests.get(get_url, params=get_params).json()
 
             if "error" in response:
-                print("Ошибка", f"Ошибка получения постов: {response['error']['error_msg']}")
+                print(f"Ошибка получения постов: {response['error']['error_msg']}")
                 return
 
             posts = response.get("response", {}).get("items", [])
 
-            # Ограничиваем количество удаляемых постов первыми 35
-            posts_to_remove = posts[:35]
+            # Фильтруем посты, чтобы оставить только посты от конкретного пользователя
+            user_posts = [post for post in posts if post.get("from_id") == user_id]
+
+            # Ограничиваем количество удаляемых постов
+            posts_to_remove = user_posts[:30]
 
             for post in posts_to_remove:
                 post_id = post["id"]
@@ -99,6 +118,7 @@ class VKPostManager:
                     print(f"Ошибка удаления поста {post_id}: {delete_response['error']['error_msg']}")
                 else:
                     print(f"Пост {post_id} удален")
+
         except Exception as e:
             print(f"Произошла ошибка при удалении постов: {str(e)}")
 
@@ -142,7 +162,7 @@ class VKPostManager:
                 post_id = response["response"]["post_id"]
                 print(f"Пост опубликован: {post_id}")
                 is_first = False
-                time.sleep(interval * 60)
+                time.sleep(interval)
                 status = self.account_status[key]
 
             except Exception as e:
@@ -150,8 +170,8 @@ class VKPostManager:
                 break
 
     def start_posting(self):
-        token = self.token_entry.get()
-        group_id = self.group_id_entry.get()
+        token = self.token_entry.get().strip().replace('\n', '')
+        group_id = self.group_id_entry.get().strip().replace('\n', '')
         message = self.post_text_entry.get("1.0", tk.END).strip()
         interval = self.interval_entry.get()
 
@@ -174,14 +194,16 @@ class VKPostManager:
         # Проверяем и удаляем существующие посты перед началом
         self.remove_existing_posts(token, group_id)
 
+        sleep(1)
+
         self.account_status[key] = True  # Устанавливаем статус на "выполняется"
         thread = threading.Thread(target=self.post_to_vk, args=(key, message, interval), daemon=True)
         self.account_threads[key] = thread
         thread.start()
 
     def stop_posting(self):
-        token = self.token_entry.get().strip()
-        group_id = self.group_id_entry.get().strip()
+        token = self.token_entry.get().strip().replace('\n', '')
+        group_id = self.group_id_entry.get().strip().replace('\n', '')
 
         if not token or not group_id:
             messagebox.showerror("Ошибка", "Введите токен и ID группы для остановки!")
@@ -195,7 +217,7 @@ class VKPostManager:
 
         # Остановка работы потока
         del self.account_threads[key]  # Удаляем поток из словаря
-        del self.account_status[key]  # Удаляем статус из словаря
+        self.account_status[key] = False
         print("Успех, публикация остановлена.")
 
     def save_config(self):
@@ -206,8 +228,8 @@ class VKPostManager:
 
         config_path = os.path.join(self.CONFIG_DIR, f"{config_name}.json")
         config = {
-            "ACCESS_TOKEN": self.token_entry.get(),
-            "GROUP_ID": self.group_id_entry.get(),
+            "ACCESS_TOKEN": self.token_entry.get().strip().replace('\n', ''),
+            "GROUP_ID": self.group_id_entry.get().strip().replace('\n', ''),
             "POST_TEXT": self.post_text_entry.get("1.0", tk.END).strip(),
             "INTERVAL": self.interval_entry.get(),
         }
