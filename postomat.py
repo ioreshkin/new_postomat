@@ -1,151 +1,636 @@
-import tkinter as tk
-from time import sleep
-from tkinter import messagebox
-import requests
+import telebot
+from telebot import types
 import threading
-import time
-import json
 import os
+import json
+import time
+import requests
+from datetime import datetime, timedelta
 
-class VKPostManager:
+class TelegramVKPostManagerBot:
     CONFIG_DIR = "vk_post_configs"
 
-    def __init__(self, root):
-        self.root = root
-        self.root.title("VK Post Manager")
-        self.account_threads = {}
-        self.account_status = {}
+    def __init__(self, token):
+        self.bot = telebot.TeleBot(token)
+        self.user_sessions = {}
 
-        # Поля для ввода данных
-        tk.Label(root, text="Токен пользователя:").grid(row=0, column=0, padx=5, pady=5)
-        self.token_entry = tk.Entry(root, width=40)
-        self.token_entry.grid(row=0, column=1, padx=5, pady=5)
-        self.add_context_menu(self.token_entry)
+        # Создаем директории если их нет
+        os.makedirs(self.CONFIG_DIR, exist_ok=True)
 
-        tk.Label(root, text="Айди группы:").grid(row=1, column=0, padx=5, pady=5)
-        self.group_id_entry = tk.Entry(root, width=40)
-        self.group_id_entry.grid(row=1, column=1, padx=5, pady=5)
-        self.add_context_menu(self.group_id_entry)
+        self.setup_handlers()
 
-        tk.Label(root, text="Текст поста:").grid(row=2, column=0, padx=5, pady=5)
-        self.post_text_entry = tk.Text(root, width=40, height=5)
-        self.post_text_entry.grid(row=2, column=1, padx=5, pady=5)
-        self.add_context_menu(self.post_text_entry)
+    def get_user_session(self, user_id):
+        if user_id not in self.user_sessions:
+            self.user_sessions[user_id] = {
+                'account_threads': {},
+                'account_status': {},
+                'temp_data': {},
+                'state': None
+            }
+        return self.user_sessions[user_id]
 
-        tk.Label(root, text="Интервал обновления (секунды):").grid(row=3, column=0, padx=5, pady=5)
-        self.interval_entry = tk.Entry(root, width=40)
-        self.interval_entry.grid(row=3, column=1, padx=5, pady=5)
+    def get_user_configs_dir(self, user_id):
+        user_dir = os.path.join(self.CONFIG_DIR, str(user_id))
+        os.makedirs(user_dir, exist_ok=True)
+        return user_dir
 
-        # Кнопки управления
-        tk.Button(root, text="Запустить", command=self.start_posting).grid(row=4, column=0, columnspan=2, pady=10)
-        tk.Button(root, text="Остановить", command=self.stop_posting).grid(row=5, column=0, columnspan=2, pady=5)
+    def setup_handlers(self):
+        @self.bot.message_handler(commands=['start'])
+        def start(message):
+            self.show_main_menu(message.chat.id)
 
-        # Кнопки для управления конфигурациями
-        tk.Button(root, text="Сохранить конфиг", command=self.save_config).grid(row=0, column=2, padx=5, pady=5)
-        tk.Button(root, text="Загрузить конфиг", command=self.load_config).grid(row=1, column=2, padx=5, pady=5)
-        tk.Label(root, text="Имя конфига:").grid(row=2, column=2, padx=5, pady=5)
-        self.config_name_entry = tk.Entry(root, width=20)
-        self.config_name_entry.grid(row=3, column=2, padx=5, pady=5)
+        @self.bot.message_handler(func=lambda message: message.text == "🏠 Главное меню")
+        def main_menu(message):
+            self.show_main_menu(message.chat.id)
 
-        # Создание директории для конфигов
-        if not os.path.exists(self.CONFIG_DIR):
-            os.makedirs(self.CONFIG_DIR)
+        @self.bot.message_handler(func=lambda message: message.text == "🚀 Запущенные конфигурации")
+        def running_configs(message):
+            self.show_running_configs(message.chat.id, message.from_user.id)
 
-    def add_context_menu(self, widget):
-        # Создание контекстного меню
-        menu = tk.Menu(widget, tearoff=0)
-        menu.add_command(label="Вырезать", command=lambda: widget.event_generate("<<Cut>>"))
-        menu.add_command(label="Копировать", command=lambda: widget.event_generate("<<Copy>>"))
-        menu.add_command(label="Вставить", command=lambda: widget.event_generate("<<Paste>>"))
+        @self.bot.message_handler(func=lambda message: message.text == "🆕 Запустить конфигурацию")
+        def start_config(message):
+            self.show_available_configs(message.chat.id, message.from_user.id, action="start")
 
-        def show_menu(event):
-            menu.post(event.x_root, event.y_root)
+        @self.bot.message_handler(func=lambda message: message.text == "🛑 Остановить все")
+        def stop_all(message):
+            self.stop_all_configs(message.chat.id, message.from_user.id)
 
-        widget.bind("<Button-3>", show_menu)  # Привязка правой кнопки мыши
+        @self.bot.message_handler(func=lambda message: message.text == "📋 Все конфигурации")
+        def all_configs(message):
+            self.show_all_configs_menu(message.chat.id, message.from_user.id)
+
+        @self.bot.callback_query_handler(func=lambda call: True)
+        def callback_query(call):
+            user_id = call.from_user.id
+            chat_id = call.message.chat.id
+            data = call.data.split(":")
+
+            if data[0] == "running_config":
+                config_name = data[1]
+                self.show_running_config_details(chat_id, user_id, config_name)
+
+            elif data[0] == "stop_config":
+                config_name = data[1]
+                self.stop_config(chat_id, user_id, config_name)
+                self.show_running_configs(chat_id, user_id)
+
+            elif data[0] == "start_config":
+                config_name = data[1]
+                self.prepare_to_start_config(chat_id, user_id, config_name)
+
+            elif data[0] == "select_date":
+                config_name = data[1]
+                selected_date = data[2]
+                self.handle_date_selection(chat_id, user_id, config_name, selected_date)
+
+            elif data[0] == "config_action":
+                config_name = data[1]
+                action = data[2]
+
+                if action == "view":
+                    self.show_config_details(chat_id, user_id, config_name)
+                elif action == "edit_text":
+                    self.edit_config_text(chat_id, user_id, config_name)
+                elif action == "delete":
+                    self.delete_config(chat_id, user_id, config_name)
+
+            elif data[0] == "add_config":
+                self.add_new_config(chat_id, user_id)
+
+            elif data[0] == "back_to_running":
+                self.show_running_configs(chat_id, user_id)
+
+            elif data[0] == "back_to_all_configs":
+                self.show_all_configs_menu(chat_id, user_id)
+
+            elif data[0] == "back_to_main":
+                self.show_main_menu(chat_id)
+
+            self.bot.answer_callback_query(call.id)
+
+    def show_main_menu(self, chat_id):
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        btn1 = types.KeyboardButton("🚀 Запущенные конфигурации")
+        btn2 = types.KeyboardButton("🆕 Запустить конфигурацию")
+        btn3 = types.KeyboardButton("🛑 Остановить все")
+        btn4 = types.KeyboardButton("📋 Все конфигурации")
+        markup.add(btn1, btn2, btn3, btn4)
+        self.bot.send_message(chat_id, "Главное меню:", reply_markup=markup)
+
+    def show_running_configs(self, chat_id, user_id):
+        session = self.get_user_session(user_id)
+        running_configs = []
+        user_configs_dir = self.get_user_configs_dir(user_id)
+
+        for key in session['account_threads']:
+            token, group_id = key
+            for config_file in os.listdir(user_configs_dir):
+                if config_file.endswith(".json"):
+                    with open(os.path.join(user_configs_dir, config_file), "r") as f:
+                        config = json.load(f)
+                        if config.get("ACCESS_TOKEN") == token and str(config.get("GROUP_ID")) == str(group_id):
+                            running_configs.append(config_file[:-5])
+
+        if not running_configs:
+            self.bot.send_message(chat_id, "Нет запущенных конфигураций.")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+        for config_name in running_configs:
+            markup.add(types.InlineKeyboardButton(
+                text=config_name,
+                callback_data=f"running_config:{config_name}"
+            ))
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data="back_to_main"
+        ))
+
+        self.bot.send_message(chat_id, "Выберите конфигурацию для остановки:", reply_markup=markup)
+
+    def show_running_config_details(self, chat_id, user_id, config_name):
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            text="🛑 Остановить",
+            callback_data=f"stop_config:{config_name}"
+        ))
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data="back_to_running"
+        ))
+
+        self.bot.send_message(chat_id, f"Конфигурация: {config_name}\nВыберите действие:", reply_markup=markup)
+
+    def stop_config(self, chat_id, user_id, config_name):
+        session = self.get_user_session(user_id)
+        user_configs_dir = self.get_user_configs_dir(user_id)
+        config_path = os.path.join(user_configs_dir, f"{config_name}.json")
+
+        if not os.path.exists(config_path):
+            self.bot.send_message(chat_id, "Конфигурация не найдена.")
+            return
+
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        key = (config["ACCESS_TOKEN"], str(config["GROUP_ID"]))
+
+        if key in session['account_threads']:
+            session['account_status'][key] = False
+            del session['account_threads'][key]
+            del session['account_status'][key]
+            self.bot.send_message(chat_id, f"Конфигурация {config_name} остановлена.")
+        else:
+            self.bot.send_message(chat_id, "Эта конфигурация не была запущена.")
+
+    def stop_all_configs(self, chat_id, user_id):
+        session = self.get_user_session(user_id)
+
+        if not session['account_threads']:
+            self.bot.send_message(chat_id, "Нет запущенных конфигураций.")
+            return
+
+        for key in list(session['account_threads'].keys()):
+            session['account_status'][key] = False
+            del session['account_threads'][key]
+            del session['account_status'][key]
+
+        self.bot.send_message(chat_id, "Все конфигурации остановлены.")
+
+    def show_available_configs(self, chat_id, user_id, action="start"):
+        user_configs_dir = self.get_user_configs_dir(user_id)
+        all_configs = [f[:-5] for f in os.listdir(user_configs_dir) if f.endswith(".json")]
+
+        if not all_configs:
+            self.bot.send_message(chat_id,
+                                  "Нет доступных конфигураций. Сначала создайте конфигурацию в разделе 'Все конфигурации'.")
+            return
+
+        session = self.get_user_session(user_id)
+        running_keys = set(session['account_threads'].keys())
+        running_configs = []
+
+        for config_file in os.listdir(user_configs_dir):
+            if config_file.endswith(".json"):
+                with open(os.path.join(user_configs_dir, config_file), "r") as f:
+                    config = json.load(f)
+                    key = (config["ACCESS_TOKEN"], str(config["GROUP_ID"]))
+                    if key in running_keys:
+                        running_configs.append(config_file[:-5])
+
+        available_configs = [c for c in all_configs if c not in running_configs]
+
+        if not available_configs:
+            self.bot.send_message(chat_id, "Все конфигурации уже запущены.")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+        for config_name in available_configs:
+            markup.add(types.InlineKeyboardButton(
+                text=config_name,
+                callback_data=f"start_config:{config_name}"
+            ))
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data="back_to_main"
+        ))
+
+        self.bot.send_message(chat_id, "Выберите конфигурацию для запуска:", reply_markup=markup)
+
+    def prepare_to_start_config(self, chat_id, user_id, config_name):
+        session = self.get_user_session(user_id)
+        session['temp_data'] = {"config_name": config_name}
+        session['state'] = "preparing_to_start"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            text="Сегодня",
+            callback_data=f"select_date:{config_name}:today"
+        ))
+        markup.add(types.InlineKeyboardButton(
+            text="Завтра",
+            callback_data=f"select_date:{config_name}:tomorrow"
+        ))
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data="back_to_main"
+        ))
+
+        self.bot.send_message(chat_id, "Выберите дату публикации:", reply_markup=markup)
+
+    def handle_date_selection(self, chat_id, user_id, config_name, selected_date):
+        session = self.get_user_session(user_id)
+
+        if selected_date == "today":
+            post_date = datetime.now()
+        else:
+            post_date = datetime.now() + timedelta(days=1)
+
+        session['temp_data']["post_date"] = post_date
+        session['state'] = "waiting_time"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data=f"start_config:{config_name}"
+        ))
+
+        self.bot.send_message(chat_id, "Введите время публикации (любой формат, например 13:30 или 14:00-15:30):",
+                              reply_markup=markup)
+
+    def process_time_input(self, message):
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        session = self.get_user_session(user_id)
+
+        if session['state'] != "waiting_time":
+            return
+
+        try:
+            time_str = message.text
+            config_name = session['temp_data']["config_name"]
+            user_configs_dir = self.get_user_configs_dir(user_id)
+            config_path = os.path.join(user_configs_dir, f"{config_name}.json")
+
+            if not os.path.exists(config_path):
+                self.bot.send_message(chat_id, "Конфигурация не найдена.")
+                return
+
+            with open(config_path, "r") as f:
+                config = json.load(f)
+
+            # Заменяем метки в тексте (включая время)
+            post_text = config["POST_TEXT"]
+            post_text = self.replace_placeholders(post_text, session['temp_data']["post_date"], time_str)
+
+            # Запускаем конфигурацию
+            key = (config["ACCESS_TOKEN"], str(config["GROUP_ID"]))
+            interval = int(config["INTERVAL"])
+
+            session['account_status'][key] = True
+            thread = threading.Thread(
+                target=self.post_to_vk,
+                args=(user_id, key, post_text, interval),
+                daemon=True
+            )
+            session['account_threads'][key] = thread
+            thread.start()
+
+            self.bot.send_message(chat_id, f"Конфигурация {config_name} запущена! Время: {time_str}")
+            session['state'] = None
+            session['temp_data'] = {}
+            self.show_main_menu(message.chat.id)
+
+        except Exception as e:
+            self.bot.send_message(chat_id, f"Произошла ошибка: {str(e)}")
 
     def remove_existing_posts(self, token, group_id):
         try:
-            # Получаем ID пользователя, связанный с токеном
-            user_info_url = "https://api.vk.com/method/users.get"
-            user_info_params = {
-                "access_token": token,
-                "v": "5.131",
-            }
-            user_response = requests.get(user_info_url, params=user_info_params).json()
+            # Получаем ID текущего пользователя
+            user_info = requests.post(
+                "https://api.vk.com/method/users.get",
+                params={
+                    "access_token": token,
+                    "v": "5.131"
+                }
+            ).json()
 
-            if "error" in user_response:
-                print(f"Ошибка получения ID пользователя: {user_response['error']['error_msg']}")
-                return
-
-            user_id = user_response["response"][0]["id"]
-            print(f"ID пользователя: {user_id}")
-
-            # Получаем все посты на стене группы
-            get_url = "https://api.vk.com/method/wall.get"
-            get_params = {
-                "access_token": token,
-                "owner_id": f"-{group_id}",
-                "count": 50,
-                "v": "5.131",
-            }
-            response = requests.get(get_url, params=get_params).json()
-
-            if "error" in response:
-                print(f"Ошибка получения постов: {response['error']['error_msg']}")
-                return
-
-            posts = response.get("response", {}).get("items", [])
-
-            # Фильтруем посты, чтобы оставить только посты от конкретного пользователя
-            user_posts = [post for post in posts if post.get("from_id") == user_id]
-
-            # Ограничиваем количество удаляемых постов
-            posts_to_remove = user_posts[:30]
-
-            for post in posts_to_remove:
-                post_id = post["id"]
-                # Пытаемся удалить пост
-                delete_url = "https://api.vk.com/method/wall.delete"
-                delete_params = {
+            current_user_id = user_info["response"][0]["id"]
+            # Получаем последние 10 постов
+            response = requests.post(
+                "https://api.vk.com/method/wall.get",
+                params={
                     "access_token": token,
                     "owner_id": f"-{group_id}",
-                    "post_id": post_id,
+                    "count": 10,
                     "v": "5.131",
                 }
-                delete_response = requests.post(delete_url, params=delete_params).json()
+            ).json()
 
-                if "error" in delete_response:
-                    print(f"Ошибка удаления поста {post_id}: {delete_response['error']['error_msg']}")
-                else:
-                    print(f"Пост {post_id} удален")
+            posts = response.get("response", {}).get("items", [])
+            # Удаляем только свои посты
+            for post in posts:
+                if post.get("from_id") == current_user_id:
+                    requests.post(
+                        "https://api.vk.com/method/wall.delete",
+                        params={
+                            "access_token": token,
+                            "owner_id": f"-{group_id}",
+                            "post_id": post["id"],
+                            "v": "5.131",
+                        }
+                    )
 
         except Exception as e:
-            print(f"Произошла ошибка при удалении постов: {str(e)}")
+            print(f"Ошибка при удалении постов: {str(e)}")
 
-    def post_to_vk(self, key, message, interval):
-        token, group_id = key
-        is_first = True
-        status = self.account_status[key]
-        while status:  # Проверяем индивидуальный статус
+    def replace_placeholders(self, text, post_date, time_str):
+        weekdays = [
+            "в понедельник", "во вторник", "в среду",
+            "в четверг", "в пятницу", "в субботу", "в воскресенье"
+        ]
+
+        replacements = {
+            "<time>": time_str,
+            "<day>": post_date.strftime("%d.%m"),
+            "<weekday>": weekdays[post_date.weekday()]
+        }
+
+        for placeholder, value in replacements.items():
+            text = text.replace(placeholder, value)
+
+        return text
+
+    def show_all_configs_menu(self, chat_id, user_id):
+        user_configs_dir = self.get_user_configs_dir(user_id)
+        configs = [f[:-5] for f in os.listdir(user_configs_dir) if f.endswith(".json")]
+
+        markup = types.InlineKeyboardMarkup()
+
+        if configs:
+            for config_name in configs:
+                markup.add(types.InlineKeyboardButton(
+                    text=config_name,
+                    callback_data=f"config_action:{config_name}:view"
+                ))
+
+        markup.add(types.InlineKeyboardButton(
+            text="➕ Добавить конфигурацию",
+            callback_data="add_config"
+        ))
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data="back_to_main"
+        ))
+
+        self.bot.send_message(chat_id, "Все конфигурации:", reply_markup=markup)
+
+    def show_config_details(self, chat_id, user_id, config_name):
+        user_configs_dir = self.get_user_configs_dir(user_id)
+        config_path = os.path.join(user_configs_dir, f"{config_name}.json")
+
+        if not os.path.exists(config_path):
+            self.bot.send_message(chat_id, "Конфигурация не найдена.")
+            return
+
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            text="✏️ Редактировать текст",
+            callback_data=f"config_action:{config_name}:edit_text"
+        ))
+        markup.add(types.InlineKeyboardButton(
+            text="🗑️ Удалить",
+            callback_data=f"config_action:{config_name}:delete"
+        ))
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data="back_to_all_configs"
+        ))
+
+        response = (
+            f"Конфигурация: {config_name}\n"
+            f"Токен: {config.get('ACCESS_TOKEN', '')}\n"
+            f"ID группы: {config.get('GROUP_ID', '')}\n"
+            f"Текст поста:\n{config.get('POST_TEXT', '')}"
+        )
+
+        self.bot.send_message(chat_id, response, reply_markup=markup)
+
+    def edit_config_text(self, chat_id, user_id, config_name):
+        user_configs_dir = self.get_user_configs_dir(user_id)
+        config_path = os.path.join(user_configs_dir, f"{config_name}.json")
+
+        if not os.path.exists(config_path):
+            self.bot.send_message(chat_id, "Конфигурация не найдена.")
+            return
+
+        session = self.get_user_session(user_id)
+        session['state'] = f"editing_text:{config_name}"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data=f"config_action:{config_name}:view"
+        ))
+
+        self.bot.send_message(chat_id, "Введите новый текст поста (можно использовать метки <time>, <day>, <weekday>):",
+                              reply_markup=markup)
+
+    def process_text_edit(self, message):
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        session = self.get_user_session(user_id)
+
+        if not session['state'] or not session['state'].startswith("editing_text:"):
+            return
+
+        config_name = session['state'].split(":")[1]
+        user_configs_dir = self.get_user_configs_dir(user_id)
+        config_path = os.path.join(user_configs_dir, f"{config_name}.json")
+
+        if not os.path.exists(config_path):
+            self.bot.send_message(chat_id, "Конфигурация не найдена.")
+            return
+
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        config["POST_TEXT"] = message.text
+
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+
+        self.bot.send_message(chat_id, "Текст поста обновлен!")
+        session['state'] = None
+        self.show_config_details(chat_id, user_id, config_name)
+
+    def delete_config(self, chat_id, user_id, config_name):
+        session = self.get_user_session(user_id)
+        user_configs_dir = self.get_user_configs_dir(user_id)
+        config_path = os.path.join(user_configs_dir, f"{config_name}.json")
+
+        if not os.path.exists(config_path):
+            self.bot.send_message(chat_id, "Конфигурация не найдена.")
+            return
+
+        # Проверяем, не запущена ли конфигурация
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        key = (config["ACCESS_TOKEN"], str(config["GROUP_ID"]))
+
+        if key in session['account_threads']:
+            self.bot.send_message(chat_id, "Сначала остановите эту конфигурацию!")
+            return
+
+        os.remove(config_path)
+        self.bot.send_message(chat_id, f"Конфигурация {config_name} удалена.")
+        self.show_all_configs_menu(chat_id, user_id)
+
+    def add_new_config(self, chat_id, user_id):
+        session = self.get_user_session(user_id)
+        session['state'] = "adding_config:name"
+        session['temp_data'] = {}
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data="back_to_all_configs"
+        ))
+
+        self.bot.send_message(chat_id, "Введите название новой конфигурации:", reply_markup=markup)
+
+    def process_config_creation(self, message):
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        session = self.get_user_session(user_id)
+
+        if not session['state'] or not session['state'].startswith("adding_config:"):
+            return
+
+        current_step = session['state'].split(":")[1]
+
+        if current_step == "name":
+            config_name = message.text
+            user_configs_dir = self.get_user_configs_dir(user_id)
+
+            if f"{config_name}.json" in os.listdir(user_configs_dir):
+                self.bot.send_message(chat_id, "Конфигурация с таким именем уже существует. Введите другое название:")
+                return
+
+            session['temp_data']['name'] = config_name
+            session['state'] = "adding_config:token"
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton(
+                text="🔙 Назад",
+                callback_data="add_config"
+            ))
+
+            self.bot.send_message(chat_id, "Введите токен VK:", reply_markup=markup)
+
+        elif current_step == "token":
+            session['temp_data']['token'] = message.text
+            session['state'] = "adding_config:group_id"
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton(
+                text="🔙 Назад",
+                callback_data="add_config"
+            ))
+
+            self.bot.send_message(chat_id, "Введите ID группы:", reply_markup=markup)
+
+        elif current_step == "group_id":
             try:
-                if not is_first:
-                    # Удаление поста
-                    delete_url = "https://api.vk.com/method/wall.delete"
-                    delete_params = {
-                        "access_token": token,
-                        "owner_id": f"-{group_id}",
-                        "post_id": post_id,
-                        "v": "5.131",
-                    }
-                    delete_response = requests.post(delete_url, params=delete_params).json()
+                group_id = int(message.text)
+                session['temp_data']['group_id'] = group_id
+                session['state'] = "adding_config:text"
 
-                    if "error" in delete_response:
-                        print("Ошибка", f"Ошибка удаления: {delete_response['error']['error_msg']}")
-                        break
+                markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton(
+                    text="🔙 Назад",
+                    callback_data="add_config"
+                ))
 
-                    print(f"Пост удален: {post_id}")
+                self.bot.send_message(chat_id,
+                                      "Введите текст поста (можно использовать метки <time>, <day>, <weekday>):",
+                                      reply_markup=markup)
+            except ValueError:
+                self.bot.send_message(chat_id, "ID группы должен быть числом. Введите корректный ID:")
 
-                # Публикация поста
+        elif current_step == "text":
+            session['temp_data']['text'] = message.text
+            session['state'] = "adding_config:interval"
+
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton(
+                text="🔙 Назад",
+                callback_data="add_config"
+            ))
+
+            self.bot.send_message(chat_id, "Введите интервал публикации (в минутах):", reply_markup=markup)
+
+        elif current_step == "interval":
+            try:
+                interval = int(message.text)
+                if interval <= 0:
+                    raise ValueError
+
+                config_data = {
+                    "ACCESS_TOKEN": session['temp_data']['token'],
+                    "GROUP_ID": session['temp_data']['group_id'],
+                    "POST_TEXT": session['temp_data']['text'],
+                    "INTERVAL": interval
+                }
+
+                user_configs_dir = self.get_user_configs_dir(user_id)
+                config_path = os.path.join(user_configs_dir, f"{session['temp_data']['name']}.json")
+                with open(config_path, "w") as f:
+                    json.dump(config_data, f)
+
+                self.bot.send_message(chat_id, f"Конфигурация {session['temp_data']['name']} успешно создана!")
+                session['state'] = None
+                session['temp_data'] = {}
+
+                self.show_all_configs_menu(chat_id, user_id)
+
+            except ValueError:
+                self.bot.send_message(chat_id,
+                                      "Интервал должен быть положительным числом. Введите корректное значение:")
+
+    def post_to_vk(self, user_id, key, message, interval):
+        token, group_id = key
+        session = self.get_user_session(user_id)
+        status = session['account_status'].get(key, False)
+        if (status): self.remove_existing_posts(token, group_id)
+
+        while status:
+            try:
+                # Публикуем новый пост
                 post_url = "https://api.vk.com/method/wall.post"
                 post_params = {
                     "access_token": token,
@@ -156,115 +641,42 @@ class VKPostManager:
                 response = requests.post(post_url, params=post_params).json()
 
                 if "error" in response:
-                    print("Ошибка", f"Ошибка публикации: {response['error']['error_msg']}")
+                    print(f"Ошибка публикации: {response['error']['error_msg']}")
                     break
 
-                post_id = response["response"]["post_id"]
-                print(f"Пост опубликован: {post_id}")
-                is_first = False
-                time.sleep(interval)
-                status = self.account_status[key]
+                print(f"Пост опубликован: {response['response']['post_id']}")
+                status = session['account_status'].get(key, False)
+
+                time.sleep(interval * 60)
+
+                self.remove_existing_posts(token, group_id)
 
             except Exception as e:
-                print("Ошибка", f"Произошла ошибка: {str(e)}")
+                print(f"Произошла ошибка: {str(e)}")
                 break
 
-    def start_posting(self):
-        token = self.token_entry.get().strip().replace('\n', '')
-        group_id = self.group_id_entry.get().strip().replace('\n', '')
-        message = self.post_text_entry.get("1.0", tk.END).strip()
-        interval = self.interval_entry.get()
+    def run(self):
+        @self.bot.message_handler(func=lambda message: True)
+        def handle_all_messages(message):
+            user_id = message.from_user.id
+            chat_id = message.chat.id
+            session = self.get_user_session(user_id)
 
-        if not token or not group_id or not message or not interval:
-            messagebox.showerror("Ошибка", "Заполните все поля!")
-            return
+            if session['state']:
+                if session['state'] == "waiting_time":
+                    self.process_time_input(message)
+                elif session['state'].startswith("editing_text:"):
+                    self.process_text_edit(message)
+                elif session['state'].startswith("adding_config:"):
+                    self.process_config_creation(message)
+                else:
+                    self.show_main_menu(chat_id)
+            else:
+                self.show_main_menu(chat_id)
 
-        try:
-            interval = int(interval)
-        except ValueError:
-            messagebox.showerror("Ошибка", "Интервал должен быть числом!")
-            return
+        self.bot.polling(none_stop=True)
 
-        key = (token, group_id)  # Уникальный ключ для потока
-
-        if key in self.account_threads:
-            messagebox.showerror("Ошибка", "Этот аккаунт и группа уже запущены!")
-            return
-
-        # Проверяем и удаляем существующие посты перед началом
-        self.remove_existing_posts(token, group_id)
-
-        sleep(1)
-
-        self.account_status[key] = True  # Устанавливаем статус на "выполняется"
-        thread = threading.Thread(target=self.post_to_vk, args=(key, message, interval), daemon=True)
-        self.account_threads[key] = thread
-        thread.start()
-
-    def stop_posting(self):
-        token = self.token_entry.get().strip().replace('\n', '')
-        group_id = self.group_id_entry.get().strip().replace('\n', '')
-
-        if not token or not group_id:
-            messagebox.showerror("Ошибка", "Введите токен и ID группы для остановки!")
-            return
-
-        key = (token, group_id)
-
-        if key not in self.account_threads:
-            messagebox.showerror("Ошибка", "Этот аккаунт и группа не активны!")
-            return
-
-        # Остановка работы потока
-        del self.account_threads[key]  # Удаляем поток из словаря
-        self.account_status[key] = False
-        print("Успех, публикация остановлена.")
-
-    def save_config(self):
-        config_name = self.config_name_entry.get().strip()
-        if not config_name:
-            messagebox.showerror("Ошибка", "Введите имя для конфигурации!")
-            return
-
-        config_path = os.path.join(self.CONFIG_DIR, f"{config_name}.json")
-        config = {
-            "ACCESS_TOKEN": self.token_entry.get().strip().replace('\n', ''),
-            "GROUP_ID": self.group_id_entry.get().strip().replace('\n', ''),
-            "POST_TEXT": self.post_text_entry.get("1.0", tk.END).strip(),
-            "INTERVAL": self.interval_entry.get(),
-        }
-        with open(config_path, "w") as f:
-            json.dump(config, f)
-        messagebox.showinfo("Успех", f"Конфигурация '{config_name}' сохранена.")
-
-    def load_config(self):
-        config_name = self.config_name_entry.get().strip()
-        if not config_name:
-            messagebox.showerror("Ошибка", "Введите имя для конфигурации!")
-            return
-
-        config_path = os.path.join(self.CONFIG_DIR, f"{config_name}.json")
-        if not os.path.exists(config_path):
-            messagebox.showerror("Ошибка", f"Конфигурация '{config_name}' не найдена.")
-            return
-
-        with open(config_path, "r") as f:
-            config = json.load(f)
-            self.token_entry.delete(0, tk.END)
-            self.token_entry.insert(0, config.get("ACCESS_TOKEN", ""))
-
-            self.group_id_entry.delete(0, tk.END)
-            self.group_id_entry.insert(0, config.get("GROUP_ID", ""))
-
-            self.post_text_entry.delete("1.0", tk.END)
-            self.post_text_entry.insert("1.0", config.get("POST_TEXT", ""))
-
-            self.interval_entry.delete(0, tk.END)
-            self.interval_entry.insert(0, config.get("INTERVAL", ""))
-        print("Успех", f"Конфигурация '{config_name}' загружена.")
-
-# Запуск приложения
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = VKPostManager(root)
-    root.mainloop()
+    # Замените 'YOUR_TELEGRAM_BOT_TOKEN' на реальный токен вашего бота
+    bot = TelegramVKPostManagerBot('8411053706:AAEVLWMhJr_cNrl-yInK3ibyMt6awNUd0X4')
+    bot.run()
