@@ -342,7 +342,7 @@ class TelegramVKPostManagerBot:
                 params={
                     "access_token": token,
                     "owner_id": f"-{group_id}",
-                    "count": 10,
+                    "count": 100,
                     "v": "5.131",
                 }
             ).json()
