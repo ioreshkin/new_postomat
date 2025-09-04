@@ -91,6 +91,8 @@ class TelegramVKPostManagerBot:
                     self.show_config_details(chat_id, user_id, config_name)
                 elif action == "edit_text":
                     self.edit_config_text(chat_id, user_id, config_name)
+                elif action == "edit_interval":
+                    self.edit_config_interval(chat_id, user_id, config_name)
                 elif action == "delete":
                     self.delete_config(chat_id, user_id, config_name)
 
@@ -328,7 +330,7 @@ class TelegramVKPostManagerBot:
         try:
             # Получаем ID текущего пользователя
             user_info = requests.post(
-                "https://api.vk.com/method/users.get",
+                "https://api.vk.ru/method/users.get",
                 params={
                     "access_token": token,
                     "v": "5.131"
@@ -338,7 +340,7 @@ class TelegramVKPostManagerBot:
             current_user_id = user_info["response"][0]["id"]
             # Получаем последние 10 постов
             response = requests.post(
-                "https://api.vk.com/method/wall.get",
+                "https://api.vk.ru/method/wall.get",
                 params={
                     "access_token": token,
                     "owner_id": f"-{group_id}",
@@ -352,7 +354,7 @@ class TelegramVKPostManagerBot:
             for post in posts:
                 if post.get("from_id") == current_user_id:
                     requests.post(
-                        "https://api.vk.com/method/wall.delete",
+                        "https://api.vk.ru/method/wall.delete",
                         params={
                             "access_token": token,
                             "owner_id": f"-{group_id}",
@@ -422,6 +424,10 @@ class TelegramVKPostManagerBot:
             callback_data=f"config_action:{config_name}:edit_text"
         ))
         markup.add(types.InlineKeyboardButton(
+            text="⌚ Изменить интервал",
+            callback_data=f"config_action:{config_name}:edit_interval"
+        ))
+        markup.add(types.InlineKeyboardButton(
             text="🗑️ Удалить",
             callback_data=f"config_action:{config_name}:delete"
         ))
@@ -435,6 +441,7 @@ class TelegramVKPostManagerBot:
             f"Токен: {config.get('ACCESS_TOKEN', '')}\n"
             f"ID группы: {config.get('GROUP_ID', '')}\n"
             f"Текст поста:\n{config.get('POST_TEXT', '')}"
+            f"\nИнтервал публикации: {config.get('INTERVAL', '')}"
         )
 
         self.bot.send_message(chat_id, response, reply_markup=markup)
@@ -457,6 +464,27 @@ class TelegramVKPostManagerBot:
         ))
 
         self.bot.send_message(chat_id, "Введите новый текст поста (можно использовать метки <time>, <day>, <weekday>):",
+                              reply_markup=markup)
+
+    def edit_config_interval(self, chat_id, user_id, config_name):
+        user_configs_dir = self.get_user_configs_dir(user_id)
+        config_path = os.path.join(user_configs_dir, f"{config_name}.json")
+
+        if not os.path.exists(config_path):
+            self.bot.send_message(chat_id, "Конфигурация не найдена.")
+            return
+
+        session = self.get_user_session(user_id)
+        session['state'] = f"editing_interval:{config_name}"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data=f"config_action:{config_name}:view"
+        ))
+
+        self.bot.send_message(chat_id,
+                              "Введите интервал публикации (в минутах):",
                               reply_markup=markup)
 
     def process_text_edit(self, message):
@@ -484,6 +512,34 @@ class TelegramVKPostManagerBot:
             json.dump(config, f)
 
         self.bot.send_message(chat_id, "Текст поста обновлен!")
+        session['state'] = None
+        self.show_config_details(chat_id, user_id, config_name)
+
+    def process_interval_edit(self, message):
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        session = self.get_user_session(user_id)
+
+        if not session['state'] or not session['state'].startswith("editing_interval:"):
+            return
+
+        config_name = session['state'].split(":")[1]
+        user_configs_dir = self.get_user_configs_dir(user_id)
+        config_path = os.path.join(user_configs_dir, f"{config_name}.json")
+
+        if not os.path.exists(config_path):
+            self.bot.send_message(chat_id, "Конфигурация не найдена.")
+            return
+
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        config["INTERVAL"] = message.text
+
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+
+        self.bot.send_message(chat_id, "Интервал публикации обновлен!")
         session['state'] = None
         self.show_config_details(chat_id, user_id, config_name)
 
@@ -631,7 +687,7 @@ class TelegramVKPostManagerBot:
         while status:
             try:
                 # Публикуем новый пост
-                post_url = "https://api.vk.com/method/wall.post"
+                post_url = "https://api.vk.ru/method/wall.post"
                 post_params = {
                     "access_token": token,
                     "owner_id": f"-{group_id}",
@@ -667,6 +723,8 @@ class TelegramVKPostManagerBot:
                     self.process_time_input(message)
                 elif session['state'].startswith("editing_text:"):
                     self.process_text_edit(message)
+                elif session['state'].startswith("editing_interval:"):
+                    self.process_interval_edit(message)
                 elif session['state'].startswith("adding_config:"):
                     self.process_config_creation(message)
                 else:
