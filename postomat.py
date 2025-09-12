@@ -732,9 +732,28 @@ class TelegramVKPostManagerBot:
             else:
                 self.show_main_menu(chat_id)
 
-        self.bot.polling(none_stop=True)
+        # безопасный запуск polling
+        while True:
+            try:
+                self.bot.infinity_polling(
+                    none_stop=True,
+                    timeout=60,  # время ожидания ответа Telegram
+                    long_polling_timeout=60  # время ожидания апдейта
+                )
+            except requests.exceptions.ReadTimeout:
+                print("⚠️ ReadTimeout — пробую переподключиться...")
+                time.sleep(5)
+            except requests.exceptions.ConnectionError:
+                print("⚠️ ConnectionError — нет соединения, жду...")
+                time.sleep(5)
+            except Exception as e:
+                print(f"❌ Неожиданная ошибка: {e}")
+                time.sleep(5)
+
 
 if __name__ == "__main__":
     # Замените 'YOUR_TELEGRAM_BOT_TOKEN' на реальный токен вашего бота
+    # test - 5409099843:AAFO8dol55aWx4ubxoC1pGid20NToOdJTH4
+    # vk spam - 8411053706:AAEVLWMhJr_cNrl-yInK3ibyMt6awNUd0X4
     bot = TelegramVKPostManagerBot('8411053706:AAEVLWMhJr_cNrl-yInK3ibyMt6awNUd0X4')
     bot.run()
