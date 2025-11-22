@@ -338,7 +338,7 @@ class TelegramVKPostManagerBot:
             ).json()
 
             current_user_id = user_info["response"][0]["id"]
-            # Получаем последние 10 постов
+            # Получаем последние 100 постов
             response = requests.post(
                 "https://api.vk.ru/method/wall.get",
                 params={
@@ -350,9 +350,13 @@ class TelegramVKPostManagerBot:
             ).json()
 
             posts = response.get("response", {}).get("items", [])
+            flag = False
+
             # Удаляем только свои посты
             for post in posts:
                 if post.get("from_id") == current_user_id:
+                    flag = True
+
                     requests.post(
                         "https://api.vk.ru/method/wall.delete",
                         params={
@@ -362,6 +366,7 @@ class TelegramVKPostManagerBot:
                             "v": "5.131",
                         }
                     )
+            return flag
 
         except Exception as e:
             print(f"Ошибка при удалении постов: {str(e)}")
@@ -705,7 +710,11 @@ class TelegramVKPostManagerBot:
 
                 time.sleep(interval * 60)
 
-                self.remove_existing_posts(token, group_id)
+                if self.remove_existing_posts(token, group_id) == False:
+                    session['account_status'][key] = False
+                    del session['account_threads'][key]
+                    del session['account_status'][key]
+                    break
 
             except Exception as e:
                 print(f"Произошла ошибка: {str(e)}")
@@ -755,5 +764,5 @@ if __name__ == "__main__":
     # Замените 'YOUR_TELEGRAM_BOT_TOKEN' на реальный токен вашего бота
     # test - 5409099843:AAFO8dol55aWx4ubxoC1pGid20NToOdJTH4
     # vk spam - 8411053706:AAEVLWMhJr_cNrl-yInK3ibyMt6awNUd0X4
-    bot = TelegramVKPostManagerBot('8411053706:AAEVLWMhJr_cNrl-yInK3ibyMt6awNUd0X4')
+    bot = TelegramVKPostManagerBot('5409099843:AAFO8dol55aWx4ubxoC1pGid20NToOdJTH4')
     bot.run()
