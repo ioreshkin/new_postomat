@@ -764,5 +764,5 @@ if __name__ == "__main__":
     # Замените 'YOUR_TELEGRAM_BOT_TOKEN' на реальный токен вашего бота
     # test - 5409099843:AAFO8dol55aWx4ubxoC1pGid20NToOdJTH4
     # vk spam - 8411053706:AAEVLWMhJr_cNrl-yInK3ibyMt6awNUd0X4
-    bot = TelegramVKPostManagerBot('5409099843:AAFO8dol55aWx4ubxoC1pGid20NToOdJTH4')
+    bot = TelegramVKPostManagerBot('8411053706:AAEVLWMhJr_cNrl-yInK3ibyMt6awNUd0X4')
     bot.run()
