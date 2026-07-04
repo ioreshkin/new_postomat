@@ -778,6 +778,7 @@ class TelegramVKPostManagerBot:
 
 class VKPostManagerBot:
     LINKS_FILE = "vk_user_links.json"
+    PAGE_SIZE = 4
 
     MAIN_TEXT_ACTIONS = {
         "🚀 Запущенные конфигурации": "running_configs",
@@ -833,8 +834,8 @@ class VKPostManagerBot:
         return text if len(text) <= 40 else f"{text[:37]}..."
 
     def build_keyboard(self, buttons, inline=True):
-        keyboard = VkKeyboard(one_time=False, inline=inline and len(buttons) <= 10)
-        buttons_per_line = 1 if inline and len(buttons) <= 10 else 2
+        keyboard = VkKeyboard(one_time=False, inline=inline and len(buttons) <= 6)
+        buttons_per_line = 1 if inline and len(buttons) <= 6 else 2
 
         for index, button in enumerate(buttons):
             payload = {"action": button["action"]}
@@ -935,6 +936,39 @@ class VKPostManagerBot:
         session['state'] = None
         session['temp_data'] = {}
 
+    def get_payload_page(self, payload):
+        try:
+            return max(0, int(payload.get("page", 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def get_page_items(self, items, page):
+        page_count = max(1, (len(items) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        page = min(max(0, page), page_count - 1)
+        start = page * self.PAGE_SIZE
+        return items[start:start + self.PAGE_SIZE], page, page_count, start
+
+    def add_page_buttons(self, buttons, action, page, page_count, back_action="back_to_main", extra_button=None):
+        if page_count <= 1:
+            if extra_button is not None:
+                buttons.append(extra_button)
+            buttons.append({"label": "🔙 Назад", "action": back_action, "color": VkKeyboardColor.PRIMARY})
+            return
+
+        if page > 0:
+            buttons.append({"label": "⬅️ Назад", "action": action, "page": page - 1, "color": VkKeyboardColor.PRIMARY})
+        elif extra_button is not None:
+            buttons.append(extra_button)
+        else:
+            buttons.append({"label": "🏠 Меню", "action": back_action, "color": VkKeyboardColor.PRIMARY})
+
+        if page < page_count - 1:
+            buttons.append({"label": "➡️ Далее", "action": action, "page": page + 1, "color": VkKeyboardColor.PRIMARY})
+        elif extra_button is not None:
+            buttons.append(extra_button)
+        else:
+            buttons.append({"label": "🏠 Меню", "action": back_action, "color": VkKeyboardColor.PRIMARY})
+
     def handle_event(self, event):
         message = self.extract_event_message(event)
         if message is None:
@@ -1000,21 +1034,21 @@ class VKPostManagerBot:
 
         if action == "running_configs":
             self.clear_user_state(telegram_user_id)
-            self.show_running_configs(vk_user_id, telegram_user_id)
+            self.show_running_configs(vk_user_id, telegram_user_id, self.get_payload_page(payload))
         elif action == "start_config_menu":
             self.clear_user_state(telegram_user_id)
-            self.show_available_configs(vk_user_id, telegram_user_id)
+            self.show_available_configs(vk_user_id, telegram_user_id, self.get_payload_page(payload))
         elif action == "stop_all":
             self.clear_user_state(telegram_user_id)
             self.stop_all_configs(vk_user_id, telegram_user_id)
         elif action == "all_configs":
             self.clear_user_state(telegram_user_id)
-            self.show_all_configs_menu(vk_user_id, telegram_user_id)
+            self.show_all_configs_menu(vk_user_id, telegram_user_id, self.get_payload_page(payload))
         elif action == "running_config":
-            self.show_running_config_details(vk_user_id, payload.get("config_name"))
+            self.show_running_config_details(vk_user_id, payload.get("config_name"), self.get_payload_page(payload))
         elif action == "stop_config":
             self.stop_config(vk_user_id, telegram_user_id, payload.get("config_name"))
-            self.show_running_configs(vk_user_id, telegram_user_id)
+            self.show_running_configs(vk_user_id, telegram_user_id, self.get_payload_page(payload))
         elif action == "start_config":
             self.prepare_to_start_config(vk_user_id, telegram_user_id, payload.get("config_name"))
         elif action == "select_date":
@@ -1030,21 +1064,21 @@ class VKPostManagerBot:
 
             if config_action == "view":
                 self.clear_user_state(telegram_user_id)
-                self.show_config_details(vk_user_id, telegram_user_id, config_name)
+                self.show_config_details(vk_user_id, telegram_user_id, config_name, self.get_payload_page(payload))
             elif config_action == "edit_text":
                 self.edit_config_text(vk_user_id, telegram_user_id, config_name)
             elif config_action == "edit_interval":
                 self.edit_config_interval(vk_user_id, telegram_user_id, config_name)
             elif config_action == "delete":
-                self.delete_config(vk_user_id, telegram_user_id, config_name)
+                self.delete_config(vk_user_id, telegram_user_id, config_name, self.get_payload_page(payload))
         elif action == "add_config":
             self.add_new_config(vk_user_id, telegram_user_id)
         elif action == "back_to_running":
             self.clear_user_state(telegram_user_id)
-            self.show_running_configs(vk_user_id, telegram_user_id)
+            self.show_running_configs(vk_user_id, telegram_user_id, self.get_payload_page(payload))
         elif action == "back_to_all_configs":
             self.clear_user_state(telegram_user_id)
-            self.show_all_configs_menu(vk_user_id, telegram_user_id)
+            self.show_all_configs_menu(vk_user_id, telegram_user_id, self.get_payload_page(payload))
         elif action == "back_to_main":
             self.clear_user_state(telegram_user_id)
             self.show_main_menu(vk_user_id)
@@ -1054,7 +1088,7 @@ class VKPostManagerBot:
     def show_main_menu(self, vk_user_id):
         self.send_message(vk_user_id, "Главное меню:", keyboard=self.main_keyboard())
 
-    def show_running_configs(self, vk_user_id, telegram_user_id):
+    def show_running_configs(self, vk_user_id, telegram_user_id, page=0):
         session = self.manager.get_user_session(telegram_user_id)
         running_configs = []
         user_configs_dir = self.manager.get_user_configs_dir(telegram_user_id)
@@ -1072,27 +1106,31 @@ class VKPostManagerBot:
             self.send_message(vk_user_id, "Нет запущенных конфигураций.", keyboard=self.main_keyboard())
             return
 
+        running_configs = sorted(running_configs)
+        page_configs, page, page_count, start = self.get_page_items(running_configs, page)
+
         buttons = [
             {
                 "label": config_name,
                 "action": "running_config",
                 "config_name": config_name,
+                "page": page,
                 "color": VkKeyboardColor.SECONDARY,
             }
-            for config_name in running_configs
+            for config_name in page_configs
         ]
-        buttons.append({"label": "🔙 Назад", "action": "back_to_main", "color": VkKeyboardColor.PRIMARY})
+        self.add_page_buttons(buttons, "running_configs", page, page_count)
 
         self.send_message(
             vk_user_id,
-            "Выберите конфигурацию для остановки:",
+            f"Выберите конфигурацию для остановки:\nСтраница {page + 1}/{page_count}. Показаны {start + 1}-{start + len(page_configs)} из {len(running_configs)}.",
             keyboard=self.build_keyboard(buttons),
         )
 
-    def show_running_config_details(self, vk_user_id, config_name):
+    def show_running_config_details(self, vk_user_id, config_name, page=0):
         buttons = [
-            {"label": "🛑 Остановить", "action": "stop_config", "config_name": config_name, "color": VkKeyboardColor.NEGATIVE},
-            {"label": "🔙 Назад", "action": "back_to_running", "color": VkKeyboardColor.PRIMARY},
+            {"label": "🛑 Остановить", "action": "stop_config", "config_name": config_name, "page": page, "color": VkKeyboardColor.NEGATIVE},
+            {"label": "🔙 Назад", "action": "back_to_running", "page": page, "color": VkKeyboardColor.PRIMARY},
         ]
 
         self.send_message(
@@ -1137,7 +1175,7 @@ class VKPostManagerBot:
 
         self.send_message(vk_user_id, "Все конфигурации остановлены.", keyboard=self.main_keyboard())
 
-    def show_available_configs(self, vk_user_id, telegram_user_id):
+    def show_available_configs(self, vk_user_id, telegram_user_id, page=0):
         user_configs_dir = self.manager.get_user_configs_dir(telegram_user_id)
         all_configs = [f[:-5] for f in os.listdir(user_configs_dir) if f.endswith(".json")]
 
@@ -1167,20 +1205,24 @@ class VKPostManagerBot:
             self.send_message(vk_user_id, "Все конфигурации уже запущены.", keyboard=self.main_keyboard())
             return
 
+        available_configs = sorted(available_configs)
+        page_configs, page, page_count, start = self.get_page_items(available_configs, page)
+
         buttons = [
             {
                 "label": config_name,
                 "action": "start_config",
                 "config_name": config_name,
+                "page": page,
                 "color": VkKeyboardColor.POSITIVE,
             }
-            for config_name in available_configs
+            for config_name in page_configs
         ]
-        buttons.append({"label": "🔙 Назад", "action": "back_to_main", "color": VkKeyboardColor.PRIMARY})
+        self.add_page_buttons(buttons, "start_config_menu", page, page_count)
 
         self.send_message(
             vk_user_id,
-            "Выберите конфигурацию для запуска:",
+            f"Выберите конфигурацию для запуска:\nСтраница {page + 1}/{page_count}. Показаны {start + 1}-{start + len(page_configs)} из {len(available_configs)}.",
             keyboard=self.build_keyboard(buttons),
         )
 
@@ -1260,9 +1302,10 @@ class VKPostManagerBot:
         except Exception as e:
             self.send_message(vk_user_id, f"Произошла ошибка: {str(e)}")
 
-    def show_all_configs_menu(self, vk_user_id, telegram_user_id):
+    def show_all_configs_menu(self, vk_user_id, telegram_user_id, page=0):
         user_configs_dir = self.manager.get_user_configs_dir(telegram_user_id)
-        configs = [f[:-5] for f in os.listdir(user_configs_dir) if f.endswith(".json")]
+        configs = sorted(f[:-5] for f in os.listdir(user_configs_dir) if f.endswith(".json"))
+        page_configs, page, page_count, start = self.get_page_items(configs, page)
 
         buttons = [
             {
@@ -1270,16 +1313,27 @@ class VKPostManagerBot:
                 "action": "config_action",
                 "config_name": config_name,
                 "config_action": "view",
+                "page": page,
                 "color": VkKeyboardColor.SECONDARY,
             }
-            for config_name in configs
+            for config_name in page_configs
         ]
-        buttons.append({"label": "➕ Добавить конфигурацию", "action": "add_config", "color": VkKeyboardColor.POSITIVE})
-        buttons.append({"label": "🔙 Назад", "action": "back_to_main", "color": VkKeyboardColor.PRIMARY})
+        self.add_page_buttons(
+            buttons,
+            "all_configs",
+            page,
+            page_count,
+            extra_button={"label": "➕ Добавить", "action": "add_config", "color": VkKeyboardColor.POSITIVE},
+        )
 
-        self.send_message(vk_user_id, "Все конфигурации:", keyboard=self.build_keyboard(buttons))
+        if configs:
+            text = f"Все конфигурации:\nСтраница {page + 1}/{page_count}. Показаны {start + 1}-{start + len(page_configs)} из {len(configs)}."
+        else:
+            text = "Все конфигурации: пусто."
 
-    def show_config_details(self, vk_user_id, telegram_user_id, config_name):
+        self.send_message(vk_user_id, text, keyboard=self.build_keyboard(buttons))
+
+    def show_config_details(self, vk_user_id, telegram_user_id, config_name, page=0):
         user_configs_dir = self.manager.get_user_configs_dir(telegram_user_id)
         config_path = os.path.join(user_configs_dir, f"{config_name}.json")
 
@@ -1291,10 +1345,10 @@ class VKPostManagerBot:
             config = json.load(f)
 
         buttons = [
-            {"label": "✏️ Редактировать текст", "action": "config_action", "config_name": config_name, "config_action": "edit_text", "color": VkKeyboardColor.PRIMARY},
-            {"label": "⌚ Изменить интервал", "action": "config_action", "config_name": config_name, "config_action": "edit_interval", "color": VkKeyboardColor.PRIMARY},
-            {"label": "🗑️ Удалить", "action": "config_action", "config_name": config_name, "config_action": "delete", "color": VkKeyboardColor.NEGATIVE},
-            {"label": "🔙 Назад", "action": "back_to_all_configs", "color": VkKeyboardColor.PRIMARY},
+            {"label": "✏️ Редактировать текст", "action": "config_action", "config_name": config_name, "config_action": "edit_text", "page": page, "color": VkKeyboardColor.PRIMARY},
+            {"label": "⌚ Изменить интервал", "action": "config_action", "config_name": config_name, "config_action": "edit_interval", "page": page, "color": VkKeyboardColor.PRIMARY},
+            {"label": "🗑️ Удалить", "action": "config_action", "config_name": config_name, "config_action": "delete", "page": page, "color": VkKeyboardColor.NEGATIVE},
+            {"label": "🔙 Назад", "action": "back_to_all_configs", "page": page, "color": VkKeyboardColor.PRIMARY},
         ]
 
         response = (
@@ -1397,7 +1451,7 @@ class VKPostManagerBot:
         session['state'] = None
         self.show_config_details(vk_user_id, telegram_user_id, config_name)
 
-    def delete_config(self, vk_user_id, telegram_user_id, config_name):
+    def delete_config(self, vk_user_id, telegram_user_id, config_name, page=0):
         session = self.manager.get_user_session(telegram_user_id)
         user_configs_dir = self.manager.get_user_configs_dir(telegram_user_id)
         config_path = os.path.join(user_configs_dir, f"{config_name}.json")
@@ -1417,7 +1471,7 @@ class VKPostManagerBot:
 
         os.remove(config_path)
         self.send_message(vk_user_id, f"Конфигурация {config_name} удалена.")
-        self.show_all_configs_menu(vk_user_id, telegram_user_id)
+        self.show_all_configs_menu(vk_user_id, telegram_user_id, page)
 
     def add_new_config(self, vk_user_id, telegram_user_id):
         session = self.manager.get_user_session(telegram_user_id)
