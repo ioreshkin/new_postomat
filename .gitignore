@@ -1,6 +1,8 @@
 dist
 
 vk_post_configs
+vk_user_links.json
+.env
 
 build
 
